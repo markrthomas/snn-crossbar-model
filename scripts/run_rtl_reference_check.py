@@ -1,0 +1,192 @@
+from __future__ import annotations
+
+import argparse
+import subprocess
+from pathlib import Path
+from typing import List
+import sys
+
+import torch
+from torchvision import datasets, transforms
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from src.crossbar_snn import CrossbarConfig, CrossbarSNN, quantize_ste
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Cross-check Python, C++, and Verilog fixed-point SNN references.")
+    parser.add_argument("--checkpoint", type=str, default="./artifacts/best_model.pt")
+    parser.add_argument("--out-dir", type=str, default="./artifacts/ref_vectors_fixed")
+    parser.add_argument("--sample-index", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument("--num-steps", type=int, default=10)
+    parser.add_argument("--hidden-dim", type=int, default=128)
+    parser.add_argument("--weight-levels", type=int, default=32)
+    parser.add_argument("--beta-num", type=int, default=95)
+    parser.add_argument("--beta-den", type=int, default=100)
+    parser.add_argument("--scale", type=int, default=256)
+    parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--data-root", type=str, default="./artifacts/data")
+    return parser.parse_args()
+
+
+def to_hex16_signed(v: int) -> str:
+    v = max(-32768, min(32767, int(v)))
+    if v < 0:
+        v = (1 << 16) + v
+    return f"{v:04x}"
+
+
+def write_lines(path: Path, lines: List[str]) -> None:
+    with path.open("w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+        f.write("\n")
+
+
+def run_python_fixed(
+    w1_i: torch.Tensor,
+    w2_i: torch.Tensor,
+    spikes: torch.Tensor,
+    beta_num: int,
+    beta_den: int,
+    threshold: int,
+) -> torch.Tensor:
+    hidden_dim = w1_i.shape[0]
+    output_dim = w2_i.shape[0]
+    num_steps = spikes.shape[0]
+    input_dim = spikes.shape[1]
+
+    mem1 = torch.zeros(hidden_dim, dtype=torch.int32)
+    mem2 = torch.zeros(output_dim, dtype=torch.int32)
+    logits = torch.zeros(output_dim, dtype=torch.int32)
+    spk1 = torch.zeros(hidden_dim, dtype=torch.int32)
+
+    for t in range(num_steps):
+        for h in range(hidden_dim):
+            cur1 = 0
+            base = h * input_dim
+            for i in range(input_dim):
+                if spikes[t, i] != 0:
+                    cur1 += int(w1_i.view(-1)[base + i].item())
+            mem_pre = (beta_num * int(mem1[h].item())) // beta_den + cur1
+            if mem_pre >= threshold:
+                spk1[h] = 1
+                mem1[h] = mem_pre - threshold
+            else:
+                spk1[h] = 0
+                mem1[h] = mem_pre
+
+        for o in range(output_dim):
+            cur2 = 0
+            base = o * hidden_dim
+            for h in range(hidden_dim):
+                if spk1[h] != 0:
+                    cur2 += int(w2_i.view(-1)[base + h].item())
+            mem_pre = (beta_num * int(mem2[o].item())) // beta_den + cur2
+            if mem_pre >= threshold:
+                mem2[o] = mem_pre - threshold
+                logits[o] += 1
+            else:
+                mem2[o] = mem_pre
+
+    return logits
+
+
+def read_int_vector(path: Path) -> List[int]:
+    return [int(line.strip()) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def main() -> None:
+    args = parse_args()
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    cfg = CrossbarConfig(
+        hidden_dim=args.hidden_dim,
+        num_steps=args.num_steps,
+        weight_levels=args.weight_levels,
+    )
+    model = CrossbarSNN(cfg).to(args.device)
+    model.load_state_dict(torch.load(args.checkpoint, map_location=args.device))
+    model.eval()
+
+    ds = datasets.MNIST(root=args.data_root, train=False, download=True, transform=transforms.ToTensor())
+    image, label = ds[args.sample_index]
+    x = image.view(-1)
+
+    torch.manual_seed(args.seed)
+    spikes = torch.stack([torch.bernoulli(torch.clamp(x, 0.0, 1.0)) for _ in range(cfg.num_steps)], dim=0).to(torch.int32)
+
+    q_w1 = quantize_ste(model.fc1.weight.detach().cpu(), cfg.weight_levels)
+    q_w2 = quantize_ste(model.fc2.weight.detach().cpu(), cfg.weight_levels)
+    w1_i = torch.round(q_w1 * args.scale).to(torch.int32).clamp(-32768, 32767)
+    w2_i = torch.round(q_w2 * args.scale).to(torch.int32).clamp(-32768, 32767)
+    threshold = args.scale
+
+    py_logits = run_python_fixed(w1_i, w2_i, spikes, args.beta_num, args.beta_den, threshold)
+
+    write_lines(out_dir / "w1.memh", [to_hex16_signed(v) for v in w1_i.view(-1).tolist()])
+    write_lines(out_dir / "w2.memh", [to_hex16_signed(v) for v in w2_i.view(-1).tolist()])
+    write_lines(out_dir / "spikes.memh", [f"{int(v)}" for v in spikes.view(-1).tolist()])
+    write_lines(out_dir / "expected_logits.txt", [str(int(v)) for v in py_logits.tolist()])
+    write_lines(
+        out_dir / "config_fixed.txt",
+        [f"{cfg.input_dim} {cfg.hidden_dim} {cfg.output_dim} {cfg.num_steps} {args.beta_num} {args.beta_den} {threshold}"],
+    )
+
+    cpp_bin = out_dir / "crossbar_snn_ref_fixed"
+    subprocess.run(
+        ["g++", "-O2", "-std=c++17", "ref/cpp/crossbar_snn_ref_fixed.cpp", "-o", str(cpp_bin)],
+        check=True,
+    )
+    subprocess.run(
+        [
+            str(cpp_bin),
+            str(out_dir / "config_fixed.txt"),
+            str(out_dir / "w1.memh"),
+            str(out_dir / "w2.memh"),
+            str(out_dir / "spikes.memh"),
+            str(out_dir / "expected_logits.txt"),
+            str(out_dir / "cpp_logits.txt"),
+            str(out_dir / "cpp_summary.txt"),
+        ],
+        check=True,
+    )
+
+    subprocess.run(
+        [
+            "iverilog",
+            "-g2012",
+            f"-DINPUT_DIM={cfg.input_dim}",
+            f"-DHIDDEN_DIM={cfg.hidden_dim}",
+            f"-DOUTPUT_DIM={cfg.output_dim}",
+            f"-DNUM_STEPS={cfg.num_steps}",
+            f"-DBETA_NUM={args.beta_num}",
+            f"-DBETA_DEN={args.beta_den}",
+            f"-DTHRESHOLD={threshold}",
+            "-o",
+            str(out_dir / "sim_fixed"),
+            "test/tb_snn_core_fixed.sv",
+            "src/snn_core_fixed.v",
+        ],
+        check=True,
+    )
+    subprocess.run([str(out_dir / "sim_fixed")], check=True)
+
+    cpp_logits = read_int_vector(out_dir / "cpp_logits.txt")
+    rtl_logits = read_int_vector(out_dir / "verilog_logits.txt")
+    expected = [int(v) for v in py_logits.tolist()]
+
+    if cpp_logits != expected:
+        raise RuntimeError(f"C++ mismatch.\nexpected={expected}\ncpp={cpp_logits}")
+    if rtl_logits != expected:
+        raise RuntimeError(f"Verilog mismatch.\nexpected={expected}\nrtl={rtl_logits}")
+
+    print("PASS: Python fixed model == C++ fixed ref == Verilog RTL output")
+    print(f"sample_index={args.sample_index} label={label}")
+    print("logits:", expected)
+    print("vectors:", out_dir)
+
+
+if __name__ == "__main__":
+    main()
