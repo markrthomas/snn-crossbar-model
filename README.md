@@ -110,6 +110,14 @@ Added fixed-point RTL reference flow:
 - C++ fixed reference: `ref/cpp/crossbar_snn_ref_fixed.cpp`
 - Unified runner: `scripts/run_rtl_reference_check.py`
 
+Default ASIC-oriented numerics (digital-first):
+
+- Weights: **INT8** with scale **128** (`artifacts/ref_vectors_fixed/w1.memh`, `w2.memh`)
+- Membrane: **INT32**
+- Leak: rational **983/1024** (~0.96)
+- Threshold: **128** (tracks the INT8 LSB / weight scale)
+- Crossbar tiling map: **128x128** tiles (see `artifacts/ref_vectors_fixed/asic_spec.json`)
+
 Run the 3-way check:
 
 ```bash

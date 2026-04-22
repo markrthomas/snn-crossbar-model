@@ -11,7 +11,7 @@ This document defines the Verilog reference implementation used for cross-langua
 
 ## Arithmetic model
 
-- Weight format: signed 16-bit integers (`w1.memh`, `w2.memh`)
+- Weight format: signed **INT8** (`w1.memh`, `w2.memh`, one byte per token)
 - Spike format: binary (`spikes.memh`)
 - Membrane format: signed 32-bit integers
 - Decay: integer rational
@@ -20,11 +20,18 @@ This document defines the Verilog reference implementation used for cross-langua
   - if `mem_pre >= THRESHOLD`: spike = 1, `mem = mem_pre - THRESHOLD`
   - else: spike = 0, `mem = mem_pre`
 
-Default constants:
+Default constants (ASIC-first defaults):
 
-- `BETA_NUM=95`
-- `BETA_DEN=100`
-- `THRESHOLD=256`
+- `WEIGHT_SCALE=128` (float weight -> int8: `round(q_float * scale)` then clamp)
+- `THRESHOLD = WEIGHT_SCALE` (one membrane unit == one weight LSB)
+- `BETA_NUM=983`, `BETA_DEN=1024` (~0.96; denominator is a power-of-two)
+
+## Generated artifacts
+
+`scripts/run_rtl_reference_check.py` writes `artifacts/ref_vectors_fixed/asic_spec.json`, which includes:
+
+- the fixed-point contract
+- a **128x128 crossbar tile** memory map for both weight matrices (logical byte addresses)
 
 ## RTL files
 

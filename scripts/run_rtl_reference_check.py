@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 from pathlib import Path
 from typing import List
@@ -10,6 +11,7 @@ import torch
 from torchvision import datasets, transforms
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from src.asic_spec import AsicFixedPointSpec, default_asic_bundle
 from src.crossbar_snn import CrossbarConfig, CrossbarSNN, quantize_ste
 
 
@@ -22,19 +24,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-steps", type=int, default=10)
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--weight-levels", type=int, default=32)
-    parser.add_argument("--beta-num", type=int, default=95)
-    parser.add_argument("--beta-den", type=int, default=100)
-    parser.add_argument("--scale", type=int, default=256)
+    fp = AsicFixedPointSpec()
+    parser.add_argument("--beta-num", type=int, default=fp.beta_num)
+    parser.add_argument("--beta-den", type=int, default=fp.beta_den)
+    parser.add_argument("--scale", type=int, default=fp.weight_scale, help="INT8 weight scale (LSB size); threshold tracks this scale.")
+    parser.add_argument("--crossbar-rows", type=int, default=128)
+    parser.add_argument("--crossbar-cols", type=int, default=128)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--data-root", type=str, default="./artifacts/data")
     return parser.parse_args()
 
 
-def to_hex16_signed(v: int) -> str:
-    v = max(-32768, min(32767, int(v)))
+def to_hex_signed(v: int, nbytes: int) -> str:
+    bits = nbytes * 8
+    lo = -(2 ** (bits - 1))
+    hi = 2 ** (bits - 1) - 1
+    v = max(lo, min(hi, int(v)))
     if v < 0:
-        v = (1 << 16) + v
-    return f"{v:04x}"
+        v = (1 << bits) + v
+    width = nbytes * 2
+    return f"{v:0{width}x}"
 
 
 def write_lines(path: Path, lines: List[str]) -> None:
@@ -119,20 +128,43 @@ def main() -> None:
 
     q_w1 = quantize_ste(model.fc1.weight.detach().cpu(), cfg.weight_levels)
     q_w2 = quantize_ste(model.fc2.weight.detach().cpu(), cfg.weight_levels)
-    w1_i = torch.round(q_w1 * args.scale).to(torch.int32).clamp(-32768, 32767)
-    w2_i = torch.round(q_w2 * args.scale).to(torch.int32).clamp(-32768, 32767)
+    fp_spec = AsicFixedPointSpec()
+    wmin = -(2 ** (fp_spec.weight_bits - 1))
+    wmax = 2 ** (fp_spec.weight_bits - 1) - 1
+    w1_i = torch.round(q_w1 * args.scale).to(torch.int32).clamp(wmin, wmax)
+    w2_i = torch.round(q_w2 * args.scale).to(torch.int32).clamp(wmin, wmax)
     threshold = args.scale
 
     py_logits = run_python_fixed(w1_i, w2_i, spikes, args.beta_num, args.beta_den, threshold)
 
-    write_lines(out_dir / "w1.memh", [to_hex16_signed(v) for v in w1_i.view(-1).tolist()])
-    write_lines(out_dir / "w2.memh", [to_hex16_signed(v) for v in w2_i.view(-1).tolist()])
+    nbytes = fp_spec.weight_bits // 8
+    write_lines(out_dir / "w1.memh", [to_hex_signed(v, nbytes) for v in w1_i.view(-1).tolist()])
+    write_lines(out_dir / "w2.memh", [to_hex_signed(v, nbytes) for v in w2_i.view(-1).tolist()])
     write_lines(out_dir / "spikes.memh", [f"{int(v)}" for v in spikes.view(-1).tolist()])
     write_lines(out_dir / "expected_logits.txt", [str(int(v)) for v in py_logits.tolist()])
     write_lines(
         out_dir / "config_fixed.txt",
         [f"{cfg.input_dim} {cfg.hidden_dim} {cfg.output_dim} {cfg.num_steps} {args.beta_num} {args.beta_den} {threshold}"],
     )
+
+    bundle = default_asic_bundle(
+        input_dim=cfg.input_dim,
+        hidden_dim=cfg.hidden_dim,
+        output_dim=cfg.output_dim,
+        crossbar_rows=args.crossbar_rows,
+        crossbar_cols=args.crossbar_cols,
+        weight_scale=args.scale,
+    )
+    bundle["runtime"] = {
+        "checkpoint": str(Path(args.checkpoint).resolve()),
+        "sample_index": args.sample_index,
+        "label": int(label),
+        "seed": args.seed,
+        "num_steps": cfg.num_steps,
+        "hidden_dim": cfg.hidden_dim,
+        "weight_levels": cfg.weight_levels,
+    }
+    (out_dir / "asic_spec.json").write_text(json.dumps(bundle, indent=2) + "\n", encoding="utf-8")
 
     cpp_bin = out_dir / "crossbar_snn_ref_fixed"
     subprocess.run(

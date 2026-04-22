@@ -5,9 +5,9 @@ module snn_core_fixed #(
     parameter integer HIDDEN_DIM = 128,
     parameter integer OUTPUT_DIM = 10,
     parameter integer NUM_STEPS = 10,
-    parameter integer BETA_NUM = 95,
-    parameter integer BETA_DEN = 100,
-    parameter integer THRESHOLD = 256,
+    parameter integer BETA_NUM = 983,
+    parameter integer BETA_DEN = 1024,
+    parameter integer THRESHOLD = 128,
     parameter string W1_FILE = "artifacts/ref_vectors_fixed/w1.memh",
     parameter string W2_FILE = "artifacts/ref_vectors_fixed/w2.memh",
     parameter string SPIKES_FILE = "artifacts/ref_vectors_fixed/spikes.memh"
@@ -22,8 +22,8 @@ module snn_core_fixed #(
     localparam integer W2_SIZE = OUTPUT_DIM * HIDDEN_DIM;
     localparam integer S_SIZE  = NUM_STEPS * INPUT_DIM;
 
-    reg signed [15:0] w1 [0:W1_SIZE-1];
-    reg signed [15:0] w2 [0:W2_SIZE-1];
+    reg signed [7:0] w1 [0:W1_SIZE-1];
+    reg signed [7:0] w2 [0:W2_SIZE-1];
     reg               spikes [0:S_SIZE-1];
 
     reg signed [31:0] mem1 [0:HIDDEN_DIM-1];

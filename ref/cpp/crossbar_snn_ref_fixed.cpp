@@ -8,11 +8,18 @@
 
 namespace {
 
-int32_t sign_extend16(uint32_t x) {
-    return (x & 0x8000U) ? static_cast<int32_t>(x | 0xFFFF0000U) : static_cast<int32_t>(x);
+int32_t sign_extend(uint32_t x, int width_bits) {
+    const uint32_t mask = (width_bits >= 32) ? 0xFFFFFFFFU : ((1U << width_bits) - 1U);
+    x &= mask;
+    const uint32_t sign_bit = 1U << (width_bits - 1);
+    if (x & sign_bit) {
+        const uint32_t upper = (~mask);
+        return static_cast<int32_t>(x | upper);
+    }
+    return static_cast<int32_t>(x);
 }
 
-std::vector<int32_t> read_memh_signed16(const std::string& path) {
+std::vector<int32_t> read_memh_signed_variable(const std::string& path) {
     std::ifstream in(path);
     if (!in) throw std::runtime_error("Failed to open: " + path);
     std::vector<int32_t> values;
@@ -22,7 +29,19 @@ std::vector<int32_t> read_memh_signed16(const std::string& path) {
         std::stringstream ss;
         ss << std::hex << tok;
         ss >> raw;
-        values.push_back(sign_extend16(raw & 0xFFFFU));
+
+        int width_bits = 0;
+        if (tok.size() <= 2) {
+            width_bits = 8;
+        } else if (tok.size() <= 4) {
+            width_bits = 16;
+        } else if (tok.size() <= 8) {
+            width_bits = 32;
+        } else {
+            throw std::runtime_error("Unsupported memh token width: " + tok);
+        }
+
+        values.push_back(sign_extend(raw, width_bits));
     }
     return values;
 }
@@ -66,8 +85,8 @@ int main(int argc, char** argv) {
         cfg >> input_dim >> hidden_dim >> output_dim >> num_steps >> beta_num >> beta_den >> threshold;
         if (!cfg) throw std::runtime_error("Invalid config_fixed values");
 
-        const auto w1 = read_memh_signed16(argv[2]);
-        const auto w2 = read_memh_signed16(argv[3]);
+        const auto w1 = read_memh_signed_variable(argv[2]);
+        const auto w2 = read_memh_signed_variable(argv[3]);
         const auto spikes = read_memh_bit(argv[4]);
         const auto expected = read_dec_vector(argv[5]);
 

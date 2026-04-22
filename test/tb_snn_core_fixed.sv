@@ -13,13 +13,13 @@
 `define NUM_STEPS 10
 `endif
 `ifndef BETA_NUM
-`define BETA_NUM 95
+`define BETA_NUM 983
 `endif
 `ifndef BETA_DEN
-`define BETA_DEN 100
+`define BETA_DEN 1024
 `endif
 `ifndef THRESHOLD
-`define THRESHOLD 256
+`define THRESHOLD 128
 `endif
 
 module tb_snn_core_fixed;
