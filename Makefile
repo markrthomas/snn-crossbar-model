@@ -14,8 +14,12 @@ eval:
 ref-compare:
 	$(PYTHON) scripts/export_and_compare_ref.py
 
+# RTL cross-check: compile once, verify SAMPLES test-set images (default 1).
+#   make rtl-check                           # sample 0 only (CI fast path)
+#   make rtl-check SAMPLES="0 1 2 3 4 5 6 7 8 9"   # one per digit class
+SAMPLES ?= 0
 rtl-check:
-	$(PYTHON) scripts/run_rtl_reference_check.py
+	$(PYTHON) scripts/run_rtl_reference_check.py --samples $(SAMPLES)
 
 test:
 	$(MAKE) -C test rtl-check
