@@ -184,6 +184,7 @@ def main() -> None:
     }
     (out_dir / "asic_spec.json").write_text(json.dumps(bundle, indent=2) + "\n", encoding="utf-8")
 
+    # --- C++ reference ---
     cpp_bin = out_dir / "crossbar_snn_ref_fixed"
     run_checked(["g++", "-O2", "-std=c++17", "ref/cpp/crossbar_snn_ref_fixed.cpp", "-o", str(cpp_bin)])
     run_checked(
@@ -199,6 +200,27 @@ def main() -> None:
         ]
     )
 
+    # --- SystemC reference ---
+    sc_bin = out_dir / "crossbar_snn_ref_fixed_sc"
+    run_checked([
+        "g++", "-O2", "-std=c++17", "-I/usr/include",
+        "ref/systemc/crossbar_snn_ref_fixed_sc.cpp",
+        "-lsystemc", "-o", str(sc_bin),
+    ])
+    run_checked(
+        [
+            str(sc_bin),
+            str(out_dir / "config_fixed.txt"),
+            str(out_dir / "w1.memh"),
+            str(out_dir / "w2.memh"),
+            str(out_dir / "spikes.memh"),
+            str(out_dir / "expected_logits.txt"),
+            str(out_dir / "sc_logits.txt"),
+            str(out_dir / "sc_summary.txt"),
+        ]
+    )
+
+    # --- Verilog RTL ---
     run_checked(
         [
             "iverilog",
@@ -218,16 +240,20 @@ def main() -> None:
     )
     run_checked([str(out_dir / "sim_fixed")])
 
+    # --- Compare all four ---
     cpp_logits = read_int_vector(out_dir / "cpp_logits.txt")
+    sc_logits  = read_int_vector(out_dir / "sc_logits.txt")
     rtl_logits = read_int_vector(out_dir / "verilog_logits.txt")
-    expected = [int(v) for v in py_logits.tolist()]
+    expected   = [int(v) for v in py_logits.tolist()]
 
     if cpp_logits != expected:
         raise RuntimeError(f"C++ mismatch.\nexpected={expected}\ncpp={cpp_logits}")
+    if sc_logits != expected:
+        raise RuntimeError(f"SystemC mismatch.\nexpected={expected}\nsc={sc_logits}")
     if rtl_logits != expected:
         raise RuntimeError(f"Verilog mismatch.\nexpected={expected}\nrtl={rtl_logits}")
 
-    print("PASS: Python fixed model == C++ fixed ref == Verilog RTL output")
+    print("PASS: Python == C++ == SystemC == Verilog RTL")
     print(f"sample_index={args.sample_index} label={label}")
     print("logits:", expected)
     print("vectors:", out_dir)
