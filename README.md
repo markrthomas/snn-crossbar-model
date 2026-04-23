@@ -1,146 +1,220 @@
 # snn-crossbar-model
 
-`snntorch`-based spiking neural network project aimed at hardware-oriented crossbar design exploration.
-
-## What this project includes
-
-- Quantized synaptic weights (STE quantization) to emulate limited conductance states.
-- Leaky Integrate-and-Fire (LIF) neurons using `snntorch`.
-- Time-step based spike simulation suitable for event-driven hardware mapping.
-- Crossbar sizing report (`crossbar_report.json`) with tile count/utilization estimates.
-- Training + evaluation scripts on MNIST for a concrete baseline.
+`snntorch`-based spiking neural network targeting hardware-oriented crossbar design.
+Includes training, quantisation-aware training (QAT), noise robustness evaluation,
+and a four-way fixed-point cross-check: **Python == C++ == SystemC == Verilog RTL**.
 
 ## Directory layout
 
-- `src/` - SNN model code and Verilog RTL (`snn_core_fixed.v`)
-- `test/` - Verilog testbench and test Makefile
-- `doc/` - design notes/spec
-- `tests/` - optional Python test area
-- `artifacts/` - generated checkpoints and reports (created at runtime)
+```
+src/                  Python model, ASIC spec, shared training utilities
+  crossbar_snn.py     CrossbarSNN, QuantLinear (with noise-aware training)
+  asic_spec.py        Fixed-point / tiling spec (AsicFixedPointSpec)
+  train_utils.py      Shared train_one_epoch() / evaluate()
+ref/
+  cpp/                C++ fixed-point reference (crossbar_snn_ref_fixed.cpp)
+  systemc/            SystemC reference (crossbar_snn_ref_fixed_sc.cpp)
+src/snn_core_fixed.v  Synthesisable-ready Verilog RTL core
+test/                 SystemVerilog testbench + Makefile
+scripts/              Sweep, noise-eval, and cross-check runners
+tests/                pytest suite (38 tests)
+doc/                  Design spec
+artifacts/            Generated at runtime (checkpoints, vectors, sweep results)
+```
 
 ## Install
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+System dependencies for RTL and SystemC cross-checks:
+
+```bash
+sudo apt-get install -y iverilog g++ libsystemc-dev
+```
+
+---
 
 ## Train
 
 ```bash
 python train.py \
-  --epochs 2 \
-  --batch-size 64 \
-  --num-steps 25 \
+  --epochs 5 \
   --hidden-dim 256 \
   --weight-levels 32 \
-  --crossbar-rows 128 \
-  --crossbar-cols 128
+  --num-steps 25 \
+  --noise-sigma 0.05      # optional: noise-aware training
+  --lr-schedule cosine    # default
 ```
 
-Outputs under `artifacts/`:
+Outputs under `artifacts/`: `best_model.pt`, `history.json`, `crossbar_report.json`.
 
-- `best_model.pt`
-- `history.json`
-- `crossbar_report.json`
+---
 
 ## Evaluate
 
 ```bash
-python evaluate.py --checkpoint artifacts/best_model.pt
+python evaluate.py --checkpoint artifacts/best_model.pt --hidden-dim 256
 ```
 
-The script prints JSON metrics including accuracy, average spikes/sample, and crossbar mapping stats.
+Prints JSON including accuracy, average spikes/sample, and crossbar tile metrics.
 
-## C++ reference model (golden check)
+---
 
-This repo includes a deterministic C++ reference implementation of the forward path:
+## QAT sweep — accuracy vs hardware cost
 
-- `ref/cpp/crossbar_snn_ref.cpp`
-- `scripts/export_and_compare_ref.py`
-
-The Python script exports:
-
-- quantized weights (`w1.txt`, `w2.txt`)
-- fixed input spike train (`spikes.txt`)
-- expected logits from the Python model (`expected_logits.txt`)
-
-Then it compiles and runs the C++ model and reports error:
+Sweeps `weight_levels × num_steps × hidden_dim`, training each configuration
+from scratch.  Results are ranked and saved to `artifacts/sweep/sweep_results.json`.
 
 ```bash
-python scripts/export_and_compare_ref.py --checkpoint artifacts/best_model.pt
+make sweep                         # 3 epochs, default grid
+make sweep SWEEP_EPOCHS=5          # longer run
+make sweep SWEEP_NOISE=0.05        # with noise-aware training
 ```
 
-Or via Makefile:
+Override any axis:
 
 ```bash
-make ref-compare
+python scripts/sweep_qat.py \
+  --weight-levels 4 8 16 32 \
+  --num-steps 5 10 25 \
+  --hidden-dims 64 128 256 \
+  --epochs 5 --save-checkpoints
 ```
 
-To explicitly match `snntorch` behavior for expected logits:
+Sample output table (sorted by accuracy):
+
+```
+ hidden  wt_lvl  steps  best_acc  tiles  bits/w
+------------------------------------------------
+    256      32     25    0.9612     11       5
+    256      16     25    0.9588     11       4
+    128      32     10    0.9541      6       5
+     64       8      5    0.8901      3       3
+```
+
+`--save-checkpoints` writes `artifacts/sweep/wl{N}_ns{N}_hd{N}.pt` and a
+matching `_cfg.json` for each point, ready for immediate noise evaluation.
+
+---
+
+## Noise robustness evaluation
+
+Evaluates a trained checkpoint under Gaussian weight noise to simulate RRAM
+device variability.  Reports `mean ± std` accuracy across multiple noise trials.
 
 ```bash
-python scripts/export_and_compare_ref.py \
-  --checkpoint artifacts/best_model.pt \
-  --expected-mode snntorch
+make noise NOISE_CKPT=artifacts/best_model.pt NOISE_LEVELS=32 NOISE_STEPS=25
 ```
 
-Or use the HW-discrete behavior:
+Or directly:
 
 ```bash
-python scripts/export_and_compare_ref.py \
-  --checkpoint artifacts/best_model.pt \
-  --expected-mode discrete
+python scripts/eval_noise.py \
+  --checkpoint artifacts/sweep/wl32_ns25_hd256.pt \
+  --weight-levels 32 --num-steps 25 \
+  --sigmas 0.0 0.02 0.05 0.1 0.2 \
+  --trials 10 \
+  --out artifacts/noise_results.json
 ```
 
-This gives you a language-independent reference path you can use to validate RTL/HLS models later, with selectable semantics.
+The `sigma/LSB` column gives a hardware-natural variability budget:
 
-Both modes are now supported end-to-end in C++:
+```
+   sigma  sigma/LSB  mean_acc  std_acc
+----------------------------------------
+  0.0000       0.00    0.9612   0.0000
+  0.0200       0.29    0.9594   0.0008
+  0.0500       0.72    0.9511   0.0024
+  0.1000       1.45    0.9187   0.0071
+```
 
-- `snntorch`: mirrors `snntorch.Leaky` default reset-delay behavior
-- `discrete`: hardware-friendly immediate reset-by-subtraction
+### Noise-aware training
 
-## Verilog RTL cross-check (Python + C++ + RTL)
-
-Added fixed-point RTL reference flow:
-
-- RTL core: `src/snn_core_fixed.v`
-- Testbench: `test/tb_snn_core_fixed.sv`
-- C++ fixed reference: `ref/cpp/crossbar_snn_ref_fixed.cpp`
-- Unified runner: `scripts/run_rtl_reference_check.py`
-
-Default ASIC-oriented numerics (digital-first):
-
-- Weights: **INT8** with scale **128** (`artifacts/ref_vectors_fixed/w1.memh`, `w2.memh`)
-- Membrane: **INT32**
-- Leak: rational **983/1024** (~0.96)
-- Threshold: **128** (tracks the INT8 LSB / weight scale)
-- Crossbar tiling map: **128x128** tiles (see `artifacts/ref_vectors_fixed/asic_spec.json`)
-
-Run the 3-way check:
+Pass `--noise-sigma` to `train.py` or `sweep_qat.py` to inject device noise
+during QAT.  Gaussian noise (std = sigma) is added to the quantised weights on
+every forward pass during training; eval always uses clean quantised weights.
 
 ```bash
-python3 scripts/run_rtl_reference_check.py
+python train.py --noise-sigma 0.05 --weight-levels 16
 ```
 
-or:
+---
+
+## Four-way fixed-point cross-check
+
+Verifies that the Python, C++, SystemC, and Verilog RTL implementations produce
+**bit-identical logits** on the same fixed-point input vectors.
 
 ```bash
 make rtl-check
+# or
+python scripts/run_rtl_reference_check.py
 ```
 
-The runner exports fixed vectors and verifies:
+The runner:
 
-- Python fixed model logits
-- C++ fixed reference logits
-- Verilog RTL logits
+1. Exports deterministic fixed-point vectors from Python
+2. Runs the Python fixed-point golden (`run_python_fixed`)
+3. Compiles and runs `ref/cpp/crossbar_snn_ref_fixed.cpp`
+4. Compiles and runs `ref/systemc/crossbar_snn_ref_fixed_sc.cpp` (SystemC 2.3)
+5. Compiles `src/snn_core_fixed.v` with iverilog and runs the simulation
+6. Asserts: **Python == C++ == SystemC == Verilog RTL**
 
-all match exactly.
+All four implementations use the same floor-division arithmetic (matching
+Python `//` semantics) so negative membrane potentials are handled identically.
+
+### Arithmetic model
+
+| Parameter     | Value        | Notes                                   |
+|---------------|--------------|-----------------------------------------|
+| Weight format | INT8         | scale=128; `round(q_float * scale)`     |
+| Membrane      | INT32        |                                         |
+| Decay         | 983/1024     | ≈ 0.96; power-of-two denominator        |
+| Threshold     | 128          | tracks weight scale (one LSB unit)      |
+| Division      | floor (÷)    | matches Python `//`, not C truncation   |
+
+### SystemC module
+
+`SnnCoreFixed` in `ref/systemc/` has the same `clk / rst_n / start / done`
+port interface as `snn_core_fixed.v`.  All timesteps complete in one simulation
+cycle, matching the Verilog behavioral model, so the two can be used together
+in a mixed-language TLM/RTL flow.
+
+---
+
+## Tests
+
+```bash
+python -m pytest tests/ -v
+```
+
+38 tests covering:
+
+- `train_utils` — `evaluate()` range/edge cases, `train_one_epoch()` finite
+  outputs, weight updates, NaN-loss guard
+- `eval_noise` — `noisy_weights` context manager (restore on exit, restore on
+  exception, sigma=0 equals quantised, re-quantisation bypassed), `eval_sigma`
+  determinism and range
+- `noise_aware_training` — `QuantLinear` noise inactive in eval, active in
+  train, weights not modified; `set_training_noise`; gradient path; finite
+  loss/grad throughout; sweep checkpoint saving and config JSON
+- `systemc_ref` — compiles, matches Python golden, bit-identical to C++,
+  all-zero spikes, negative weights, summary error=0, bad-arg exits
+
+CI runs pytest then the full four-way RTL cross-check on every push.
+
+---
 
 ## Hardware design notes
 
-- `weight_levels` approximates resistive levels in analog/RRAM-like arrays.
-- `num_steps` controls temporal resolution and event sparsity.
-- `crossbar_rows` and `crossbar_cols` drive tile count and utilization estimates.
-- Spike statistics can be used to estimate switching activity and dynamic energy.
+- `weight_levels` approximates resistive states in RRAM/PCM arrays.
+- `num_steps` controls temporal resolution; latency ∝ `num_steps × hidden_dim`.
+- `crossbar_rows × crossbar_cols` drives tile count and utilisation estimates.
+- Spike statistics from `crossbar_report()` are a proxy for switching activity
+  and dynamic energy per inference.
+- The SystemC module interface (`clk/rst_n/start/done`) is designed for direct
+  integration with a TLM stimulus environment when the RTL moves to a pipelined
+  clock-accurate implementation.
