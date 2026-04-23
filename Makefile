@@ -1,6 +1,6 @@
 PYTHON ?= python3
 
-.PHONY: install train eval ref-compare rtl-check test docs clean
+.PHONY: install train eval ref-compare rtl-check test sweep noise docs clean
 
 install:
 	$(PYTHON) -m pip install -r requirements.txt
@@ -19,6 +19,29 @@ rtl-check:
 
 test:
 	$(MAKE) -C test rtl-check
+
+# Sweep weight_levels × num_steps.  Override vars to customise, e.g.:
+#   make sweep SWEEP_EPOCHS=5 SWEEP_LEVELS="4 8 16 32" SWEEP_STEPS="5 10 25"
+SWEEP_EPOCHS  ?= 3
+SWEEP_LEVELS  ?= 4 8 16 32
+SWEEP_STEPS   ?= 5 10 25
+sweep:
+	$(PYTHON) scripts/sweep_qat.py \
+	  --epochs $(SWEEP_EPOCHS) \
+	  --weight-levels $(SWEEP_LEVELS) \
+	  --num-steps $(SWEEP_STEPS)
+
+# Noise robustness eval against a trained checkpoint.
+#   make noise NOISE_CKPT=artifacts/best_model.pt NOISE_LEVELS=32 NOISE_STEPS=25
+NOISE_CKPT    ?= ./artifacts/best_model.pt
+NOISE_LEVELS  ?= 32
+NOISE_STEPS   ?= 25
+noise:
+	$(PYTHON) scripts/eval_noise.py \
+	  --checkpoint $(NOISE_CKPT) \
+	  --weight-levels $(NOISE_LEVELS) \
+	  --num-steps $(NOISE_STEPS) \
+	  --out artifacts/noise_results.json
 
 docs:
 	@echo "Documentation available at doc/design_spec.md"

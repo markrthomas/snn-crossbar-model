@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
 from src.crossbar_snn import CrossbarConfig, CrossbarSNN
+from src.train_utils import evaluate, train_one_epoch
 
 
 def parse_args() -> argparse.Namespace:
@@ -25,21 +26,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", type=str, default="./artifacts")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     return parser.parse_args()
-
-
-def evaluate(model: CrossbarSNN, loader: DataLoader, device: torch.device) -> float:
-    model.eval()
-    correct = 0
-    total = 0
-    with torch.no_grad():
-        for images, labels in loader:
-            images = images.to(device)
-            labels = labels.to(device)
-            logits, _ = model(images)
-            preds = torch.argmax(logits, dim=1)
-            correct += (preds == labels).sum().item()
-            total += labels.numel()
-    return correct / max(total, 1)
 
 
 def main() -> None:
@@ -71,29 +57,7 @@ def main() -> None:
     best_acc = 0.0
 
     for epoch in range(1, args.epochs + 1):
-        model.train()
-        total_loss = 0.0
-        total_correct = 0
-        total_items = 0
-
-        for images, labels in train_loader:
-            images = images.to(device)
-            labels = labels.to(device)
-
-            optimizer.zero_grad()
-            logits, _ = model(images)
-            loss = criterion(logits, labels)
-            if not torch.isfinite(loss):
-                raise RuntimeError(f"Non-finite loss at epoch {epoch}: {loss.item()}")
-            loss.backward()
-            optimizer.step()
-
-            total_loss += loss.item() * labels.numel()
-            total_correct += (torch.argmax(logits, dim=1) == labels).sum().item()
-            total_items += labels.numel()
-
-        train_loss = total_loss / max(total_items, 1)
-        train_acc = total_correct / max(total_items, 1)
+        train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, criterion, device, epoch)
         test_acc = evaluate(model, test_loader, device)
 
         history["train_loss"].append(train_loss)
