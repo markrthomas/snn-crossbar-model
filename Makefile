@@ -25,11 +25,16 @@ test:
 SWEEP_EPOCHS  ?= 3
 SWEEP_LEVELS  ?= 4 8 16 32
 SWEEP_STEPS   ?= 5 10 25
+SWEEP_DIMS    ?= 128 256
+SWEEP_NOISE   ?= 0.0
 sweep:
 	$(PYTHON) scripts/sweep_qat.py \
 	  --epochs $(SWEEP_EPOCHS) \
 	  --weight-levels $(SWEEP_LEVELS) \
-	  --num-steps $(SWEEP_STEPS)
+	  --num-steps $(SWEEP_STEPS) \
+	  --hidden-dims $(SWEEP_DIMS) \
+	  --noise-sigma $(SWEEP_NOISE) \
+	  --save-checkpoints
 
 # Noise robustness eval against a trained checkpoint.
 #   make noise NOISE_CKPT=artifacts/best_model.pt NOISE_LEVELS=32 NOISE_STEPS=25

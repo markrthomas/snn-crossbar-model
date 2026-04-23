@@ -25,6 +25,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-root", type=str, default="./artifacts/data")
     parser.add_argument("--out-dir", type=str, default="./artifacts")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--noise-sigma", type=float, default=0.0,
+                        help="Std-dev of Gaussian noise injected into quantised weights during "
+                             "training (0 = standard QAT, >0 = noise-aware training)")
+    parser.add_argument("--lr-schedule", choices=["cosine", "none"], default="cosine",
+                        help="LR schedule (cosine annealing recommended for quantised models)")
     return parser.parse_args()
 
 
@@ -50,8 +55,15 @@ def main() -> None:
         crossbar_cols=args.crossbar_cols,
     )
     model = CrossbarSNN(cfg).to(device)
+    if args.noise_sigma > 0.0:
+        model.set_training_noise(args.noise_sigma)
+        print(f"Noise-aware training: sigma={args.noise_sigma}")
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     criterion = torch.nn.CrossEntropyLoss()
+    scheduler = (
+        torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+        if args.lr_schedule == "cosine" else None
+    )
 
     history = {"train_loss": [], "train_acc": [], "test_acc": []}
     best_acc = 0.0
@@ -59,6 +71,8 @@ def main() -> None:
     for epoch in range(1, args.epochs + 1):
         train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, criterion, device, epoch)
         test_acc = evaluate(model, test_loader, device)
+        if scheduler is not None:
+            scheduler.step()
 
         history["train_loss"].append(train_loss)
         history["train_acc"].append(train_acc)

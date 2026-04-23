@@ -28,12 +28,16 @@ def quantize_ste(input_tensor: torch.Tensor, levels: int) -> torch.Tensor:
 
 
 class QuantLinear(nn.Linear):
-    def __init__(self, in_features: int, out_features: int, bias: bool = False, levels: int = 32):
+    def __init__(self, in_features: int, out_features: int, bias: bool = False,
+                 levels: int = 32, noise_sigma: float = 0.0):
         super().__init__(in_features, out_features, bias=bias)
         self.levels = levels
+        self.noise_sigma = noise_sigma
 
     def forward(self, input_tensor: torch.Tensor) -> torch.Tensor:
         q_weight = quantize_ste(self.weight, self.levels)
+        if self.noise_sigma > 0.0 and self.training:
+            q_weight = q_weight + self.noise_sigma * torch.randn_like(q_weight)
         return nn.functional.linear(input_tensor, q_weight, self.bias)
 
 
@@ -137,6 +141,16 @@ class CrossbarSNN(nn.Module):
             dim=0,
         )
         return self._forward_with_spikes(spikes, mode="snntorch")
+
+    def set_training_noise(self, sigma: float) -> None:
+        """Inject Gaussian noise (std=sigma) into quantised weights during training.
+
+        Simulates RRAM device variability during QAT so the model learns to be
+        robust to it.  Noise is active only when model.training is True so eval
+        accuracy still reflects the clean quantised weights.
+        """
+        self.fc1.noise_sigma = sigma
+        self.fc2.noise_sigma = sigma
 
     def crossbar_report(self) -> Dict[str, float]:
         cfg = self.cfg
