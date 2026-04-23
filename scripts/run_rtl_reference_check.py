@@ -116,7 +116,13 @@ def main() -> None:
         weight_levels=args.weight_levels,
     )
     model = CrossbarSNN(cfg).to(args.device)
-    model.load_state_dict(torch.load(args.checkpoint, map_location=args.device))
+    checkpoint_path = Path(args.checkpoint)
+    if checkpoint_path.exists():
+        model.load_state_dict(torch.load(args.checkpoint, map_location=args.device))
+    else:
+        print(f"No checkpoint found at {args.checkpoint}; using random weights for cross-check.")
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(model.state_dict(), checkpoint_path)
     model.eval()
 
     ds = datasets.MNIST(root=args.data_root, train=False, download=True, transform=transforms.ToTensor())
