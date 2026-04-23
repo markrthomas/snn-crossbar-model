@@ -29,5 +29,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Run Python unit tests
+        run: python -m pytest tests/ -v
+
       - name: Run Python/C++/Verilog cross-check
         run: make rtl-check

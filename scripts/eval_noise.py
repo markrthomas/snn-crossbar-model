@@ -101,6 +101,9 @@ def eval_sigma(
     accs: List[float] = []
     for trial in range(trials):
         with noisy_weights(model, sigma, weight_levels, seed=base_seed + trial):
+            # Fix the spike-sampling seed so Bernoulli variance doesn't inflate
+            # the across-trial std; we want variance to reflect weight noise only.
+            torch.manual_seed(base_seed)
             acc = evaluate(model, loader, device)
         accs.append(acc)
 
