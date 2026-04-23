@@ -40,7 +40,16 @@ def main() -> None:
         crossbar_cols=args.crossbar_cols,
     )
     model = CrossbarSNN(cfg).to(device)
-    model.load_state_dict(torch.load(ckpt, map_location=device))
+    state_dict = torch.load(ckpt, map_location=device)
+    ck_fc1 = state_dict.get("fc1.weight")
+    if ck_fc1 is not None:
+        expected = (cfg.hidden_dim, cfg.input_dim)
+        if tuple(ck_fc1.shape) != expected:
+            raise RuntimeError(
+                f"Checkpoint fc1.weight shape {tuple(ck_fc1.shape)} does not match "
+                f"model {expected}. Wrong --hidden-dim?"
+            )
+    model.load_state_dict(state_dict)
     model.eval()
 
     test_set = datasets.MNIST(root=args.data_root, train=False, download=True, transform=transforms.ToTensor())

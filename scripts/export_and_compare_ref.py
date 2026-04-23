@@ -102,10 +102,15 @@ def main() -> None:
     cpp_bin = Path(args.cpp_bin)
     cpp_bin.parent.mkdir(parents=True, exist_ok=True)
 
-    subprocess.run(
+    compile_result = subprocess.run(
         ["g++", "-O2", "-std=c++17", str(cpp_src), "-o", str(cpp_bin)],
-        check=True,
+        capture_output=True,
+        text=True,
     )
+    if compile_result.returncode != 0:
+        raise RuntimeError(
+            f"g++ compilation failed:\n--- stderr ---\n{compile_result.stderr}"
+        )
 
     result = subprocess.run(
         [

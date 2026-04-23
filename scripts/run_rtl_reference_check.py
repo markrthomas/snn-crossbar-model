@@ -101,6 +101,18 @@ def run_python_fixed(
     return logits
 
 
+def run_checked(cmd: List[str]) -> None:
+    """Run a subprocess, raising RuntimeError with stderr on non-zero exit."""
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Command failed (exit {result.returncode}): {' '.join(str(c) for c in cmd)}\n"
+            f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
+        )
+    if result.stdout.strip():
+        print(result.stdout.strip())
+
+
 def read_int_vector(path: Path) -> List[int]:
     return [int(line.strip()) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
@@ -173,11 +185,8 @@ def main() -> None:
     (out_dir / "asic_spec.json").write_text(json.dumps(bundle, indent=2) + "\n", encoding="utf-8")
 
     cpp_bin = out_dir / "crossbar_snn_ref_fixed"
-    subprocess.run(
-        ["g++", "-O2", "-std=c++17", "ref/cpp/crossbar_snn_ref_fixed.cpp", "-o", str(cpp_bin)],
-        check=True,
-    )
-    subprocess.run(
+    run_checked(["g++", "-O2", "-std=c++17", "ref/cpp/crossbar_snn_ref_fixed.cpp", "-o", str(cpp_bin)])
+    run_checked(
         [
             str(cpp_bin),
             str(out_dir / "config_fixed.txt"),
@@ -187,11 +196,10 @@ def main() -> None:
             str(out_dir / "expected_logits.txt"),
             str(out_dir / "cpp_logits.txt"),
             str(out_dir / "cpp_summary.txt"),
-        ],
-        check=True,
+        ]
     )
 
-    subprocess.run(
+    run_checked(
         [
             "iverilog",
             "-g2012",
@@ -206,10 +214,9 @@ def main() -> None:
             str(out_dir / "sim_fixed"),
             "test/tb_snn_core_fixed.sv",
             "src/snn_core_fixed.v",
-        ],
-        check=True,
+        ]
     )
-    subprocess.run([str(out_dir / "sim_fixed")], check=True)
+    run_checked([str(out_dir / "sim_fixed")])
 
     cpp_logits = read_int_vector(out_dir / "cpp_logits.txt")
     rtl_logits = read_int_vector(out_dir / "verilog_logits.txt")

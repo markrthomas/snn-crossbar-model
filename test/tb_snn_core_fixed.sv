@@ -59,7 +59,17 @@ module tb_snn_core_fixed;
         #10;
         start = 1'b0;
 
-        wait(done == 1'b1);
+        // Timeout: the behavioral model finishes in one clock cycle; 64 cycles
+        // is generous enough to cover any tool overhead without hanging forever.
+        fork
+            wait(done == 1'b1);
+            begin : timeout_blk
+                repeat (64) @(posedge clk);
+                $fatal(1, "TIMEOUT: done not asserted within 64 cycles after start");
+            end
+        join_any
+        disable timeout_blk;
+
         fd = $fopen("artifacts/ref_vectors_fixed/verilog_logits.txt", "w");
         if (fd == 0) begin
             $display("ERROR: failed to open output file");

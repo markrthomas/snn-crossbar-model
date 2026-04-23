@@ -49,6 +49,24 @@ class CrossbarConfig:
     crossbar_cols: int = 128
     threshold: float = 1.0
 
+    def __post_init__(self) -> None:
+        if not (0.0 < self.beta < 1.0):
+            raise ValueError(f"beta must be in (0, 1), got {self.beta}")
+        if self.threshold <= 0.0:
+            raise ValueError(f"threshold must be positive, got {self.threshold}")
+        if self.weight_levels < 2:
+            raise ValueError(f"weight_levels must be >= 2, got {self.weight_levels}")
+        for name, val in [
+            ("input_dim", self.input_dim),
+            ("hidden_dim", self.hidden_dim),
+            ("output_dim", self.output_dim),
+            ("num_steps", self.num_steps),
+            ("crossbar_rows", self.crossbar_rows),
+            ("crossbar_cols", self.crossbar_cols),
+        ]:
+            if val <= 0:
+                raise ValueError(f"{name} must be positive, got {val}")
+
 
 class CrossbarSNN(nn.Module):
     def __init__(self, cfg: CrossbarConfig):

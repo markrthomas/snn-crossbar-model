@@ -27,6 +27,8 @@ class AsicFixedPointSpec:
 
 
 def crossbar_tile_count(total_cells: int, rows: int, cols: int) -> int:
+    if rows <= 0 or cols <= 0:
+        raise ValueError(f"crossbar rows and cols must be positive, got {rows}x{cols}")
     xbar_cells = rows * cols
     return (total_cells + xbar_cells - 1) // xbar_cells
 

@@ -83,6 +83,8 @@ def main() -> None:
             optimizer.zero_grad()
             logits, _ = model(images)
             loss = criterion(logits, labels)
+            if not torch.isfinite(loss):
+                raise RuntimeError(f"Non-finite loss at epoch {epoch}: {loss.item()}")
             loss.backward()
             optimizer.step()
 

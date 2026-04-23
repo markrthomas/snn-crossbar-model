@@ -8,6 +8,14 @@
 
 namespace {
 
+// Match Python // (floor division): round toward -inf, not toward zero.
+// C++ integer / truncates toward zero, which diverges for negative numerators.
+inline int64_t floor_div(int64_t a, int64_t b) {
+    int64_t q = a / b;
+    int64_t r = a % b;
+    return (r != 0 && ((a ^ b) < 0)) ? q - 1 : q;
+}
+
 int32_t sign_extend(uint32_t x, int width_bits) {
     const uint32_t mask = (width_bits >= 32) ? 0xFFFFFFFFU : ((1U << width_bits) - 1U);
     x &= mask;
@@ -84,6 +92,7 @@ int main(int argc, char** argv) {
         int beta_num = 0, beta_den = 1, threshold = 1;
         cfg >> input_dim >> hidden_dim >> output_dim >> num_steps >> beta_num >> beta_den >> threshold;
         if (!cfg) throw std::runtime_error("Invalid config_fixed values");
+        if (beta_den == 0) throw std::runtime_error("beta_den must not be zero");
 
         const auto w1 = read_memh_signed_variable(argv[2]);
         const auto w2 = read_memh_signed_variable(argv[3]);
@@ -104,7 +113,7 @@ int main(int argc, char** argv) {
                 for (int i = 0; i < input_dim; ++i) {
                     if (spikes[t * input_dim + i]) cur1 += w1[h * input_dim + i];
                 }
-                int32_t mem_pre = static_cast<int32_t>((static_cast<int64_t>(beta_num) * mem1[h]) / beta_den + cur1);
+                int32_t mem_pre = static_cast<int32_t>(floor_div(static_cast<int64_t>(beta_num) * mem1[h], beta_den) + cur1);
                 if (mem_pre >= threshold) {
                     spk1[h] = 1;
                     mem1[h] = mem_pre - threshold;
@@ -119,7 +128,7 @@ int main(int argc, char** argv) {
                 for (int h = 0; h < hidden_dim; ++h) {
                     if (spk1[h]) cur2 += w2[o * hidden_dim + h];
                 }
-                int32_t mem_pre = static_cast<int32_t>((static_cast<int64_t>(beta_num) * mem2[o]) / beta_den + cur2);
+                int32_t mem_pre = static_cast<int32_t>(floor_div(static_cast<int64_t>(beta_num) * mem2[o], beta_den) + cur2);
                 if (mem_pre >= threshold) {
                     mem2[o] = mem_pre - threshold;
                     logits[o] += 1;
