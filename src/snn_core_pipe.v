@@ -1,8 +1,9 @@
 // snn_core_pipe.v — Synthesisable pipelined FSM implementation of the SNN crossbar core.
 //
-// One multiply-accumulate operation per clock cycle.  The behavioral model
-// (snn_core_fixed.v) completes all timesteps in a single simulation cycle and
-// uses $readmemh — neither is synthesisable.  This module replaces both with:
+// One multiply-accumulate operation per clock cycle.  The reference model
+// (snn_core_fixed.v) is not synthesisable as-is (file-backed weights via
+// `$readmemh`, and very wide combinational MAC loops).  This module replaces
+// both with:
 //   - A registered write port for weight loading (wr_en / wr_sel / wr_addr / wr_data)
 //   - A flat spike-input bus presented at start
 //   - A 4-state FSM that serialises the MAC loops

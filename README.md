@@ -178,10 +178,14 @@ Python `//` semantics) so negative membrane potentials are handled identically.
 
 ### SystemC module
 
-`SnnCoreFixed` in `ref/systemc/` has the same `clk / rst_n / start / done`
-port interface as `snn_core_fixed.v`.  All timesteps complete in one simulation
-cycle, matching the Verilog behavioral model, so the two can be used together
-in a mixed-language TLM/RTL flow.
+`SnnCoreFixed` in `ref/systemc/` has the same `clk / rst_n / start / done / busy`
+port interface as `snn_core_fixed.v`, and matches its **clock-level** behavior:
+one SNN timestep per clock cycle while running, with a sticky `done` handshake
+until `start` is released after completion.
+
+New runs arm on a **rising edge** of `start` while idle.  After sticky `done`
+completes, `start` must return low before another run can arm (prevents an
+accidental immediate re-run if `start` is tied high through the handshake).
 
 ---
 

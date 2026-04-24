@@ -15,7 +15,9 @@ module snn_core_fixed #(
     input  wire clk,
     input  wire rst_n,
     input  wire start,
-    output reg  done
+    output reg  done,
+    // High whenever the core is not idle: running timesteps or in sticky-done.
+    output wire busy
 );
 
     localparam integer W1_SIZE = HIDDEN_DIM * INPUT_DIM;
@@ -31,7 +33,18 @@ module snn_core_fixed #(
     reg               spk1 [0:HIDDEN_DIM-1];
     reg signed [31:0] logits [0:OUTPUT_DIM-1];
 
-    integer t, i, h, o;
+    localparam [1:0] S_IDLE = 2'd0;
+    localparam [1:0] S_RUN  = 2'd1;
+    localparam [1:0] S_DONE = 2'd2;
+
+    reg [1:0] state = S_IDLE;
+    reg [31:0] t_step = 0;
+    reg start_prev = 1'b0;
+    reg need_start_low = 1'b0;
+
+    assign busy = rst_n && (state != S_IDLE);
+
+    integer i, h, o;
     integer idx;
     integer _fd;
     reg signed [63:0] cur1;
@@ -73,6 +86,10 @@ module snn_core_fixed #(
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             done <= 1'b0;
+            state <= S_IDLE;
+            t_step <= 0;
+            start_prev <= 1'b0;
+            need_start_low <= 1'b0;
             for (h = 0; h < HIDDEN_DIM; h = h + 1) begin
                 mem1[h] <= 0;
                 spk1[h] <= 1'b0;
@@ -82,22 +99,33 @@ module snn_core_fixed #(
                 logits[o] <= 0;
             end
         end else begin
-            done <= 1'b0;
-            if (start) begin
-                for (h = 0; h < HIDDEN_DIM; h = h + 1) begin
-                    mem1[h] = 0;
-                    spk1[h] = 1'b0;
+            case (state)
+                S_IDLE: begin
+                    done <= 1'b0;
+                    if (!start) begin
+                        need_start_low <= 1'b0;
+                    end
+                    // Arm new jobs on a rising edge of start, except right after a sticky-done
+                    // completion where we require start to return low before re-arming.
+                    if (start && !start_prev && !need_start_low) begin
+                        t_step <= 0;
+                        for (h = 0; h < HIDDEN_DIM; h = h + 1) begin
+                            mem1[h] = 0;
+                            spk1[h] = 1'b0;
+                        end
+                        for (o = 0; o < OUTPUT_DIM; o = o + 1) begin
+                            mem2[o] = 0;
+                            logits[o] = 0;
+                        end
+                        state <= S_RUN;
+                    end
                 end
-                for (o = 0; o < OUTPUT_DIM; o = o + 1) begin
-                    mem2[o] = 0;
-                    logits[o] = 0;
-                end
-
-                for (t = 0; t < NUM_STEPS; t = t + 1) begin
+                S_RUN: begin
+                    done <= 1'b0;
                     for (h = 0; h < HIDDEN_DIM; h = h + 1) begin
                         cur1 = 0;
                         for (i = 0; i < INPUT_DIM; i = i + 1) begin
-                            idx = t * INPUT_DIM + i;
+                            idx = t_step * INPUT_DIM + i;
                             if (spikes[idx]) begin
                                 cur1 = cur1 + $signed(w1[h * INPUT_DIM + i]);
                             end
@@ -127,9 +155,28 @@ module snn_core_fixed #(
                             mem2[o] = mem_pre;
                         end
                     end
+
+                    if (t_step == (NUM_STEPS - 1)) begin
+                        state <= S_DONE;
+                    end else begin
+                        t_step <= t_step + 1;
+                    end
                 end
-                done <= 1'b1;
-            end
+                S_DONE: begin
+                    // Sticky done: hold completion until start is deasserted.
+                    done <= 1'b1;
+                    if (!start) begin
+                        need_start_low <= 1'b1;
+                        state <= S_IDLE;
+                    end
+                end
+                default: begin
+                    done <= 1'b0;
+                    state <= S_IDLE;
+                end
+            endcase
+
+            start_prev <= start;
         end
     end
 

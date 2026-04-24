@@ -36,9 +36,13 @@ Default constants (ASIC-first defaults):
 ## RTL files
 
 - `src/snn_core_fixed.v`:
+  - ports: `clk`, `rst_n`, `start`, `done`, `busy` (`busy` high whenever not idle)
   - core fixed-point SNN compute block
   - reads vectors with `$readmemh`
-  - computes logits for all timesteps on `start`
+  - computes logits across multiple clock cycles (one SNN timestep per cycle)
+    after a rising-edge qualified `start` while idle, with a sticky `done`
+    handshake until `start` is released; after that handshake, `start` must
+    return low before another run can arm
 - `test/tb_snn_core_fixed.sv`:
   - drives reset/start
   - waits for `done`

@@ -5,8 +5,8 @@
 //   - C++:      ref/cpp/crossbar_snn_ref_fixed.cpp
 //   - Verilog:  src/snn_core_fixed.v
 //
-// The module interface mirrors snn_core_fixed.v exactly (clk, rst_n, start,
-// done) so it can later be used as a TLM reference in a mixed-language flow.
+// The module interface mirrors snn_core_fixed.v (clk, rst_n, start, done, busy)
+// so it can later be used as a TLM reference in a mixed-language flow.
 //
 // Compile:
 //   g++ -O2 -std=c++17 -I/usr/include \
@@ -95,10 +95,14 @@ std::vector<int32_t> read_dec_vector(const std::string& path) {
 // Ports mirror snn_core_fixed.v.  Weight and spike vectors are passed in at
 // construction time (read from files before elaboration in sc_main).
 //
-// Computation semantics:
-//   On the first posedge clk after start is asserted, all num_steps timesteps
-//   are executed in a single simulation cycle (matching the Verilog behavioral
-//   model).  done is asserted for that same cycle.
+// Computation semantics (clock-accurate, matches snn_core_fixed.v):
+// - One simulation timestep of the SNN is executed per clock cycle while running.
+// - After the final timestep, done is asserted and held sticky-high until start
+//   is deasserted (release cycle), matching the Verilog reference handshake.
+// - A new run is armed only on a rising edge of start (start && !prev_start),
+//   except immediately after sticky-done completion where start must return low
+//   before another run can arm.
+// - busy is high whenever not in IDLE (running timesteps or sticky-done).
 // ---------------------------------------------------------------------------
 
 SC_MODULE(SnnCoreFixed) {
@@ -106,6 +110,7 @@ SC_MODULE(SnnCoreFixed) {
     sc_in<bool>     rst_n;
     sc_in<bool>     start;
     sc_out<bool>    done;
+    sc_out<bool>    busy;
 
     // Results accessible after done is asserted.
     std::vector<int32_t> logits;
@@ -129,62 +134,104 @@ SC_MODULE(SnnCoreFixed) {
     }
 
     void compute() {
+        enum class State { IDLE, RUN, DONE };
+        State state = State::IDLE;
+        int t_step = 0;
+        bool prev_start = false;
+        bool need_start_low = false;
+
+        std::vector<int32_t> mem1(m_hidden_dim, 0);
+        std::vector<int32_t> mem2(m_output_dim, 0);
+        std::vector<int32_t> spk1(m_hidden_dim, 0);
+
         while (true) {
             wait();  // posedge clk
 
             if (!rst_n.read()) {
                 done.write(false);
+                busy.write(false);
+                state = State::IDLE;
+                t_step = 0;
+                prev_start = false;
+                need_start_low = false;
+                std::fill(mem1.begin(), mem1.end(), 0);
+                std::fill(mem2.begin(), mem2.end(), 0);
+                std::fill(spk1.begin(), spk1.end(), 0);
                 std::fill(logits.begin(), logits.end(), 0);
                 continue;
             }
 
-            done.write(false);
-
-            if (!start.read())
-                continue;
-
-            // --- Run all timesteps (single-cycle behavioral, matches Verilog) ---
-            std::vector<int32_t> mem1(m_hidden_dim, 0);
-            std::vector<int32_t> mem2(m_output_dim, 0);
-            std::vector<int32_t> spk1(m_hidden_dim, 0);
-            std::fill(logits.begin(), logits.end(), 0);
-
-            for (int t = 0; t < m_num_steps; ++t) {
-                for (int h = 0; h < m_hidden_dim; ++h) {
-                    int64_t cur1 = 0;
-                    for (int i = 0; i < m_input_dim; ++i) {
-                        if (m_spikes[t * m_input_dim + i])
-                            cur1 += m_w1[h * m_input_dim + i];
+            switch (state) {
+                case State::IDLE: {
+                    done.write(false);
+                    if (!start.read()) {
+                        need_start_low = false;
                     }
-                    int32_t mem_pre = static_cast<int32_t>(
-                        floor_div(static_cast<int64_t>(m_beta_num) * mem1[h], m_beta_den) + cur1);
-                    if (mem_pre >= m_threshold) {
-                        spk1[h] = 1;
-                        mem1[h] = mem_pre - m_threshold;
-                    } else {
-                        spk1[h] = 0;
-                        mem1[h] = mem_pre;
+                    if (start.read() && !prev_start && !need_start_low) {
+                        t_step = 0;
+                        std::fill(mem1.begin(), mem1.end(), 0);
+                        std::fill(mem2.begin(), mem2.end(), 0);
+                        std::fill(spk1.begin(), spk1.end(), 0);
+                        std::fill(logits.begin(), logits.end(), 0);
+                        state = State::RUN;
                     }
+                    break;
                 }
+                case State::RUN: {
+                    done.write(false);
 
-                for (int o = 0; o < m_output_dim; ++o) {
-                    int64_t cur2 = 0;
                     for (int h = 0; h < m_hidden_dim; ++h) {
-                        if (spk1[h])
-                            cur2 += m_w2[o * m_hidden_dim + h];
+                        int64_t cur1 = 0;
+                        for (int i = 0; i < m_input_dim; ++i) {
+                            if (m_spikes[t_step * m_input_dim + i])
+                                cur1 += m_w1[h * m_input_dim + i];
+                        }
+                        int32_t mem_pre = static_cast<int32_t>(
+                            floor_div(static_cast<int64_t>(m_beta_num) * mem1[h], m_beta_den) + cur1);
+                        if (mem_pre >= m_threshold) {
+                            spk1[h] = 1;
+                            mem1[h] = mem_pre - m_threshold;
+                        } else {
+                            spk1[h] = 0;
+                            mem1[h] = mem_pre;
+                        }
                     }
-                    int32_t mem_pre = static_cast<int32_t>(
-                        floor_div(static_cast<int64_t>(m_beta_num) * mem2[o], m_beta_den) + cur2);
-                    if (mem_pre >= m_threshold) {
-                        mem2[o] = mem_pre - m_threshold;
-                        logits[o] += 1;
+
+                    for (int o = 0; o < m_output_dim; ++o) {
+                        int64_t cur2 = 0;
+                        for (int h = 0; h < m_hidden_dim; ++h) {
+                            if (spk1[h])
+                                cur2 += m_w2[o * m_hidden_dim + h];
+                        }
+                        int32_t mem_pre = static_cast<int32_t>(
+                            floor_div(static_cast<int64_t>(m_beta_num) * mem2[o], m_beta_den) + cur2);
+                        if (mem_pre >= m_threshold) {
+                            mem2[o] = mem_pre - m_threshold;
+                            logits[o] += 1;
+                        } else {
+                            mem2[o] = mem_pre;
+                        }
+                    }
+
+                    if (t_step == (m_num_steps - 1)) {
+                        state = State::DONE;
                     } else {
-                        mem2[o] = mem_pre;
+                        ++t_step;
                     }
+                    break;
+                }
+                case State::DONE: {
+                    done.write(true);
+                    if (!start.read()) {
+                        need_start_low = true;
+                        state = State::IDLE;
+                    }
+                    break;
                 }
             }
 
-            done.write(true);
+            prev_start = start.read();
+            busy.write(rst_n.read() && state != State::IDLE);
         }
     }
 
@@ -234,7 +281,7 @@ int sc_main(int argc, char* argv[]) {
 
         // --- Signals ---
         sc_clock      clk("clk", 10, SC_NS);
-        sc_signal<bool> rst_n("rst_n"), start("start"), done("done");
+        sc_signal<bool> rst_n("rst_n"), start("start"), done("done"), busy("busy");
 
         // --- DUT ---
         SnnCoreFixed dut("dut",
@@ -245,6 +292,7 @@ int sc_main(int argc, char* argv[]) {
         dut.rst_n(rst_n);
         dut.start(start);
         dut.done(done);
+        dut.busy(busy);
 
         // --- Stimulus: reset → start pulse → wait for done ---
         rst_n.write(false);
@@ -258,13 +306,14 @@ int sc_main(int argc, char* argv[]) {
         sc_start(10, SC_NS);   // one cycle with start high
         start.write(false);
 
-        // Poll for done with a 64-cycle timeout (computation is single-cycle).
-        int timeout = 64;
+        // Poll for done with a generous multi-cycle timeout (Verilog reference runs
+        // one SNN timestep per clock cycle, plus completion bookkeeping).
+        int timeout = num_steps + 16;
         while (!done.read() && timeout-- > 0)
             sc_start(10, SC_NS);
 
         if (!done.read())
-            throw std::runtime_error("Timeout: done not asserted within 64 cycles");
+            throw std::runtime_error("Timeout: done not asserted within expected multi-cycle window");
 
         // --- Verify and write outputs ---
         const std::vector<int32_t>& logits = dut.logits;
