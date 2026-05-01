@@ -37,16 +37,18 @@ Default constants (ASIC-first defaults):
 
 - `src/snn_core_fixed.v`:
   - ports: `clk`, `rst_n`, `start`, `done`, `busy` (`busy` high whenever not idle)
-  - core fixed-point SNN compute block
-  - reads vectors with `$readmemh`
+  - core fixed-point SNN compute block; no file I/O (memories initialised by the testbench)
   - computes logits across multiple clock cycles (one SNN timestep per cycle)
     after a rising-edge qualified `start` while idle, with a sticky `done`
     handshake until `start` is released; after that handshake, `start` must
     return low before another run can arm
 - `test/tb_snn_core_fixed.sv`:
-  - drives reset/start
-  - waits for `done`
-  - writes `artifacts/ref_vectors_fixed/verilog_logits.txt`
+  - loads `w1`, `w2`, and `spikes` memories via `$readmemh` from the directory
+    passed as `+data_dir=<absolute-path>` (falls back to
+    `artifacts/ref_vectors_fixed` if the plusarg is absent)
+  - drives reset/start; waits for `done`
+  - writes `verilog_logits.txt` into `data_dir` after scenario 1 completes,
+    before any later protocol-verification scenarios run
 
 ## Cross-language check flow
 
@@ -58,14 +60,18 @@ python3 scripts/run_rtl_reference_check.py
 
 This script:
 
-1. exports fixed-point vectors from Python
-2. runs Python fixed-point golden
+1. exports fixed-point vectors from Python into per-sample directories under `--out-dir`
+2. runs Python fixed-point golden (vectorised, floor-division arithmetic)
 3. compiles/runs C++ fixed reference (`ref/cpp/crossbar_snn_ref_fixed.cpp`)
-4. compiles/runs Verilog RTL (`iverilog` + `vvp`)
-5. checks equality: Python == C++ == Verilog
+4. compiles/runs SystemC reference (`ref/systemc/crossbar_snn_ref_fixed_sc.cpp`)
+5. compiles Verilog RTL with `iverilog`, runs each sample with `vvp sim_fixed +data_dir=<sample_dir>`
+6. asserts exact equality: Python == C++ == SystemC == Verilog RTL
 
-Shortcut:
+Pass `--skip-compile` to reuse binaries from a previous run.
+
+Shortcut (5 samples by default):
 
 ```bash
-make -C test rtl-check
+make rtl-check
+# or: make rtl-check SAMPLES="0 1 2 3 4 5 6 7 8 9"
 ```

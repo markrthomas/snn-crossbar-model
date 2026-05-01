@@ -47,7 +47,7 @@ class CrossbarConfig:
     hidden_dim: int = 256
     output_dim: int = 10
     num_steps: int = 25
-    beta: float = 0.95
+    beta: float = 983 / 1024  # matches AsicFixedPointSpec.beta_num / beta_den (~0.9599)
     weight_levels: int = 32
     crossbar_rows: int = 128
     crossbar_cols: int = 128

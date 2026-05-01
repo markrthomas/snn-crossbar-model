@@ -195,8 +195,11 @@ accidental immediate re-run if `start` is tied high through the handshake).
 python -m pytest tests/ -v
 ```
 
-38 tests covering:
+42 tests covering:
 
+- `asic_spec` — `AsicFixedPointSpec.beta_float` matches `CrossbarConfig` default;
+  per-layer tile counts consistent with `default_asic_bundle()`; utilisation
+  denominator uses actual tile count
 - `train_utils` — `evaluate()` range/edge cases, `train_one_epoch()` finite
   outputs, weight updates, NaN-loss guard
 - `eval_noise` — `noisy_weights` context manager (restore on exit, restore on
@@ -209,6 +212,9 @@ python -m pytest tests/ -v
   all-zero spikes, negative weights, summary error=0, bad-arg exits
 
 CI runs pytest then the full four-way RTL cross-check on every push.
+`make rtl-check` checks 5 samples by default (indices 0–4); override with
+`SAMPLES="0 1 2 3 4 5 6 7 8 9"` for one per digit class.
+Pass `--skip-compile` to reuse compiled binaries during iterative development.
 
 ---
 

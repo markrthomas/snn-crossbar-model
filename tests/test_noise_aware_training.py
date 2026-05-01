@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.sweep_qat import run_config
-from src.crossbar_snn import CrossbarConfig, CrossbarSNN, QuantLinear, quantize_ste
+from src.crossbar_snn import CrossbarSNN, QuantLinear
 from src.train_utils import evaluate
 
 

@@ -7,7 +7,6 @@ and verifies its output matches the Python golden and the C++ reference exactly.
 from __future__ import annotations
 
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -175,7 +174,6 @@ def test_systemc_zero_spikes(sc_binary, tmp_path):
     hidden_dim, input_dim, output_dim, num_steps = 4, 8, 3, 3
     w1 = torch.randint(-128, 128, (hidden_dim, input_dim), dtype=torch.int32)
     w2 = torch.randint(-128, 128, (output_dim, hidden_dim), dtype=torch.int32)
-    spikes = torch.zeros(num_steps, input_dim, dtype=torch.int32)
 
     write_lines(tmp_path / "w1.memh",     [to_hex_signed(v, 1) for v in w1.view(-1).tolist()])
     write_lines(tmp_path / "w2.memh",     [to_hex_signed(v, 1) for v in w2.view(-1).tolist()])

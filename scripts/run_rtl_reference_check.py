@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import subprocess
 from pathlib import Path
 from typing import List
@@ -47,6 +46,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--crossbar-cols", type=int, default=128)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--data-root", type=str, default="./artifacts/data")
+    parser.add_argument(
+        "--skip-compile",
+        action="store_true",
+        help="Reuse existing compiled binaries in --out-dir (skip g++/iverilog compilation).",
+    )
     return parser.parse_args()
 
 
@@ -75,45 +79,31 @@ def run_python_fixed(
     beta_den: int,
     threshold: int,
 ) -> torch.Tensor:
+    num_steps = spikes.shape[0]
     hidden_dim = w1_i.shape[0]
     output_dim = w2_i.shape[0]
-    num_steps = spikes.shape[0]
-    input_dim = spikes.shape[1]
 
-    mem1 = torch.zeros(hidden_dim, dtype=torch.int32)
-    mem2 = torch.zeros(output_dim, dtype=torch.int32)
-    logits = torch.zeros(output_dim, dtype=torch.int32)
-    spk1 = torch.zeros(hidden_dim, dtype=torch.int32)
+    # Use int64 throughout: beta_num * membrane can overflow int32 before the divide.
+    # torch integer // truncates toward zero (C-style); use rounding_mode='floor' to
+    # match Python // semantics for negative membrane values.
+    w1 = w1_i.to(torch.int64)
+    w2 = w2_i.to(torch.int64)
+    mem1 = torch.zeros(hidden_dim, dtype=torch.int64)
+    mem2 = torch.zeros(output_dim, dtype=torch.int64)
+    logits = torch.zeros(output_dim, dtype=torch.int64)
 
     for t in range(num_steps):
-        for h in range(hidden_dim):
-            cur1 = 0
-            base = h * input_dim
-            for i in range(input_dim):
-                if spikes[t, i] != 0:
-                    cur1 += int(w1_i.view(-1)[base + i].item())
-            mem_pre = (beta_num * int(mem1[h].item())) // beta_den + cur1
-            if mem_pre >= threshold:
-                spk1[h] = 1
-                mem1[h] = mem_pre - threshold
-            else:
-                spk1[h] = 0
-                mem1[h] = mem_pre
+        cur1 = w1 @ spikes[t].to(torch.int64)
+        mem_pre1 = torch.div(beta_num * mem1, beta_den, rounding_mode="floor") + cur1
+        spk1 = (mem_pre1 >= threshold).to(torch.int64)
+        mem1 = torch.where(mem_pre1 >= threshold, mem_pre1 - threshold, mem_pre1)
 
-        for o in range(output_dim):
-            cur2 = 0
-            base = o * hidden_dim
-            for h in range(hidden_dim):
-                if spk1[h] != 0:
-                    cur2 += int(w2_i.view(-1)[base + h].item())
-            mem_pre = (beta_num * int(mem2[o].item())) // beta_den + cur2
-            if mem_pre >= threshold:
-                mem2[o] = mem_pre - threshold
-                logits[o] += 1
-            else:
-                mem2[o] = mem_pre
+        cur2 = w2 @ spk1
+        mem_pre2 = torch.div(beta_num * mem2, beta_den, rounding_mode="floor") + cur2
+        logits += (mem_pre2 >= threshold).to(torch.int64)
+        mem2 = torch.where(mem_pre2 >= threshold, mem_pre2 - threshold, mem_pre2)
 
-    return logits
+    return logits.to(torch.int32)
 
 
 def run_checked(cmd: List[str]) -> None:
@@ -234,15 +224,7 @@ def check_sample(
     cpp_logits = run_ref(cpp_bin, "cpp_logits.txt", "cpp_summary.txt")
     sc_logits  = run_ref(sc_bin,  "sc_logits.txt",  "sc_summary.txt")
 
-    # RTL sim reads/writes from the fixed path the testbench was compiled with.
-    # Swap in this sample's vectors, run, then copy output back.
-    fixed_dir = Path("artifacts/ref_vectors_fixed")
-    fixed_dir.mkdir(parents=True, exist_ok=True)
-    for fname in ("w1.memh", "w2.memh", "spikes.memh", "expected_logits.txt", "config_fixed.txt"):
-        shutil.copy2(sample_dir / fname, fixed_dir / fname)
-    run_checked([str(sim_bin)])
-    rtl_output = fixed_dir / "verilog_logits.txt"
-    shutil.copy2(rtl_output, sample_dir / "verilog_logits.txt")
+    run_checked([str(sim_bin), f"+data_dir={sample_dir.resolve()}"])
     rtl_logits = read_int_vector(sample_dir / "verilog_logits.txt")
 
     errors = {}
@@ -298,11 +280,17 @@ def main() -> None:
         root=args.data_root, train=False, download=True, transform=transforms.ToTensor()
     )
 
-    # Compile all three non-Python references once upfront.
-    print("Compiling references...")
-    cpp_bin = compile_cpp(out_dir)
-    sc_bin  = compile_sc(out_dir)
-    rtl_bin = compile_rtl(out_dir, cfg, beta_num, beta_den, threshold)
+    # Compile all three non-Python references once upfront (or reuse cached binaries).
+    if args.skip_compile:
+        cpp_bin = out_dir / "crossbar_snn_ref_fixed"
+        sc_bin  = out_dir / "crossbar_snn_ref_fixed_sc"
+        rtl_bin = out_dir / "sim_fixed"
+        print(f"Skipping compilation; using binaries in {out_dir}")
+    else:
+        print("Compiling references...")
+        cpp_bin = compile_cpp(out_dir)
+        sc_bin  = compile_sc(out_dir)
+        rtl_bin = compile_rtl(out_dir, cfg, beta_num, beta_den, threshold)
 
     results = []
     failures = []

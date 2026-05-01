@@ -10,7 +10,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.eval_noise import eval_sigma, noisy_weights
-from src.crossbar_snn import CrossbarSNN, quantize_ste
+from src.crossbar_snn import quantize_ste
 
 
 # ---------------------------------------------------------------------------

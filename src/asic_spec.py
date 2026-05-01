@@ -21,6 +21,10 @@ class AsicFixedPointSpec:
     beta_den: int = 1024
     threshold: int = 128  # one "unit" of membrane == one weight LSB after scaling
 
+    @property
+    def beta_float(self) -> float:
+        return self.beta_num / self.beta_den
+
     def threshold_from_scale(self, scale: int) -> int:
         """Threshold tracks the chosen weight quantization scale (LSB)."""
         return int(scale)
@@ -139,8 +143,10 @@ def default_asic_bundle(
             "layer1_cells": layer1_cells,
             "layer2_cells": layer2_cells,
             "total_cells": total_cells,
-            "tile_count_total": crossbar_tile_count(total_cells, crossbar_rows, crossbar_cols),
-            "tile_utilization_total": total_cells / (crossbar_tile_count(total_cells, crossbar_rows, crossbar_cols) * xbar_cells),
+            # Sum per-layer tile counts: partial edge tiles each consume a full crossbar,
+            # so pooling total_cells / xbar_cells underestimates the actual tile count.
+            "tile_count_total": map_w1["tile_count"] + map_w2["tile_count"],
+            "tile_utilization_total": total_cells / ((map_w1["tile_count"] + map_w2["tile_count"]) * xbar_cells),
         },
         "memory_map": {"w1": map_w1, "w2": map_w2},
     }

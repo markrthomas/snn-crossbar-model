@@ -37,6 +37,9 @@ module tb_snn_core_fixed;
     integer o;
     integer exp_logits [0:`OUTPUT_DIM-1];
 
+    // Populated by load_memories before any clock edges; used by write_logits_file.
+    string data_dir;
+
     snn_core_fixed #(
         .INPUT_DIM(`INPUT_DIM),
         .HIDDEN_DIM(`HIDDEN_DIM),
@@ -44,10 +47,7 @@ module tb_snn_core_fixed;
         .NUM_STEPS(`NUM_STEPS),
         .BETA_NUM(`BETA_NUM),
         .BETA_DEN(`BETA_DEN),
-        .THRESHOLD(`THRESHOLD),
-        .W1_FILE("artifacts/ref_vectors_fixed/w1.memh"),
-        .W2_FILE("artifacts/ref_vectors_fixed/w2.memh"),
-        .SPIKES_FILE("artifacts/ref_vectors_fixed/spikes.memh")
+        .THRESHOLD(`THRESHOLD)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
@@ -55,6 +55,18 @@ module tb_snn_core_fixed;
         .done(done),
         .busy(busy)
     );
+
+    // Load weight/spike memories from the directory supplied via +data_dir=<path>.
+    // Falls back to the repo-relative default when the plusarg is absent.
+    // Runs entirely at time 0 (no delays) so memories are ready before the first
+    // clock edge (always #5) that the main initial block triggers.
+    initial begin: load_memories
+        if (!$value$plusargs("data_dir=%s", data_dir))
+            data_dir = "artifacts/ref_vectors_fixed";
+        $readmemh({data_dir, "/w1.memh"},     dut.w1);
+        $readmemh({data_dir, "/w2.memh"},     dut.w2);
+        $readmemh({data_dir, "/spikes.memh"}, dut.spikes);
+    end
 
     always #5 clk = ~clk;
     always @(posedge clk) begin
@@ -141,16 +153,16 @@ module tb_snn_core_fixed;
 
     task automatic write_logits_file;
         begin
-            fd = $fopen("artifacts/ref_vectors_fixed/verilog_logits.txt", "w");
+            fd = $fopen({data_dir, "/verilog_logits.txt"}, "w");
             if (fd == 0) begin
-                $display("ERROR: failed to open output file");
+                $display("ERROR: failed to open %s/verilog_logits.txt", data_dir);
                 $finish(1);
             end
             for (o = 0; o < `OUTPUT_DIM; o = o + 1) begin
                 $fwrite(fd, "%0d\n", dut.logits[o]);
             end
             $fclose(fd);
-            $display("Wrote artifacts/ref_vectors_fixed/verilog_logits.txt");
+            $display("Wrote %s/verilog_logits.txt", data_dir);
         end
     endtask
 
@@ -163,6 +175,9 @@ module tb_snn_core_fixed;
         wait_done_with_timeout(`NUM_STEPS + 16, "TIMEOUT: done not asserted within expected multi-cycle window");
         assert_latency(`NUM_STEPS + 1, "LATENCY_MISMATCH");
         capture_expected_logits();
+        // Write output immediately after the first successful run so that the
+        // cross-check runner can read results even if a later scenario fatals.
+        write_logits_file();
 
         // Scenario 2: hold start high through completion; done must stick high
         // until start is released.
@@ -240,7 +255,6 @@ module tb_snn_core_fixed;
         // after the accepted start edge. Stay safely below that window.
         assert_done_low_for_cycles(`NUM_STEPS, "REARM_HOLD_SHOULD_NOT_START");
 
-        write_logits_file();
         $finish;
     end
 endmodule

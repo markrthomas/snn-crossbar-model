@@ -7,10 +7,7 @@ module snn_core_fixed #(
     parameter integer NUM_STEPS = 10,
     parameter integer BETA_NUM = 983,
     parameter integer BETA_DEN = 1024,
-    parameter integer THRESHOLD = 128,
-    parameter string W1_FILE = "artifacts/ref_vectors_fixed/w1.memh",
-    parameter string W2_FILE = "artifacts/ref_vectors_fixed/w2.memh",
-    parameter string SPIKES_FILE = "artifacts/ref_vectors_fixed/spikes.memh"
+    parameter integer THRESHOLD = 128
 )(
     input  wire clk,
     input  wire rst_n,
@@ -46,7 +43,6 @@ module snn_core_fixed #(
 
     integer i, h, o;
     integer idx;
-    integer _fd;
     reg signed [63:0] cur1;
     reg signed [63:0] cur2;
     reg signed [63:0] mem_pre;
@@ -66,22 +62,6 @@ module snn_core_fixed #(
             floor_div_64 = (r != 0 && (a[63] ^ b[63])) ? q - 1 : q;
         end
     endfunction
-
-    initial begin
-        // Verify files are readable before $readmemh so the error is actionable.
-        _fd = $fopen(W1_FILE, "r");
-        if (_fd == 0) $fatal(1, "Cannot open W1_FILE: %s", W1_FILE);
-        $fclose(_fd);
-        _fd = $fopen(W2_FILE, "r");
-        if (_fd == 0) $fatal(1, "Cannot open W2_FILE: %s", W2_FILE);
-        $fclose(_fd);
-        _fd = $fopen(SPIKES_FILE, "r");
-        if (_fd == 0) $fatal(1, "Cannot open SPIKES_FILE: %s", SPIKES_FILE);
-        $fclose(_fd);
-        $readmemh(W1_FILE, w1);
-        $readmemh(W2_FILE, w2);
-        $readmemh(SPIKES_FILE, spikes);
-    end
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
