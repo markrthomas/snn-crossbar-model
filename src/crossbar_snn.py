@@ -7,11 +7,19 @@ import snntorch as snn
 import torch
 import torch.nn as nn
 
+from src.asic_spec import AsicFixedPointSpec, default_asic_bundle
+
+# Sentinel for QuantLinear.levels: bypasses quantisation in _STEQuantize.forward.
+# Used by eval_noise.noisy_weights() to hold pre-computed noisy weights in place
+# without re-snapping them to the quantisation grid on every forward call.
+# Not a valid CrossbarConfig.weight_levels value (validation rejects it).
+BYPASS_QUANTIZATION: int = 1
+
 
 class _STEQuantize(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input_tensor: torch.Tensor, levels: int) -> torch.Tensor:
-        if levels <= 1:
+        if levels <= BYPASS_QUANTIZATION:
             return input_tensor
         step = 2.0 / (levels - 1)
         clipped = torch.clamp(input_tensor, -1.0, 1.0)
@@ -52,6 +60,7 @@ class CrossbarConfig:
     crossbar_rows: int = 128
     crossbar_cols: int = 128
     threshold: float = 1.0
+    forward_mode: str = "snntorch"  # "snntorch" or "discrete"
 
     def __post_init__(self) -> None:
         if not (0.0 < self.beta < 1.0):
@@ -70,6 +79,28 @@ class CrossbarConfig:
         ]:
             if val <= 0:
                 raise ValueError(f"{name} must be positive, got {val}")
+        if self.forward_mode not in {"snntorch", "discrete"}:
+            raise ValueError(
+                f"forward_mode must be 'snntorch' or 'discrete', got {self.forward_mode!r}"
+            )
+
+    def validate_asic_compat(self, spec: AsicFixedPointSpec) -> None:
+        """Raise ValueError if this config is incompatible with the given ASIC spec.
+
+        Checks that the decay constant and weight quantisation level count are
+        consistent with what the RTL and fixed-point references will compute.
+        """
+        if abs(self.beta - spec.beta_float) > 1e-9:
+            raise ValueError(
+                f"beta mismatch: config has {self.beta!r}, "
+                f"spec has {spec.beta_num}/{spec.beta_den}={spec.beta_float!r}"
+            )
+        max_levels = 2 ** spec.weight_bits
+        if self.weight_levels > max_levels:
+            raise ValueError(
+                f"weight_levels={self.weight_levels} exceeds the "
+                f"{2**spec.weight_bits} representable INT{spec.weight_bits} values"
+            )
 
 
 class CrossbarSNN(nn.Module):
@@ -81,7 +112,7 @@ class CrossbarSNN(nn.Module):
         self.lif1 = snn.Leaky(beta=cfg.beta, threshold=cfg.threshold)
         self.lif2 = snn.Leaky(beta=cfg.beta, threshold=cfg.threshold)
 
-    def _forward_with_spikes(
+    def forward_with_spike_sequence(
         self,
         spikes: torch.Tensor,
         mode: str = "snntorch",
@@ -126,13 +157,6 @@ class CrossbarSNN(nn.Module):
         }
         return logits, stats
 
-    def forward_with_spike_sequence(
-        self,
-        spikes: torch.Tensor,
-        mode: str = "snntorch",
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        return self._forward_with_spikes(spikes, mode=mode)
-
     def forward(self, images: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, float]]:
         batch_size = images.shape[0]
         x = images.view(batch_size, -1)
@@ -140,7 +164,7 @@ class CrossbarSNN(nn.Module):
             [torch.bernoulli(torch.clamp(x, 0.0, 1.0)) for _ in range(self.cfg.num_steps)],
             dim=0,
         )
-        return self._forward_with_spikes(spikes, mode="snntorch")
+        return self.forward_with_spike_sequence(spikes, mode=self.cfg.forward_mode)
 
     def set_training_noise(self, sigma: float) -> None:
         """Inject Gaussian noise (std=sigma) into quantised weights during training.
@@ -152,23 +176,25 @@ class CrossbarSNN(nn.Module):
         self.fc1.noise_sigma = sigma
         self.fc2.noise_sigma = sigma
 
-    def crossbar_report(self) -> Dict[str, float]:
+    def crossbar_report(self) -> Dict[str, object]:
+        """Return tile and utilisation metrics via the canonical default_asic_bundle()."""
         cfg = self.cfg
-        xbar_cells = cfg.crossbar_rows * cfg.crossbar_cols
-        layer_1_cells = cfg.input_dim * cfg.hidden_dim
-        layer_2_cells = cfg.hidden_dim * cfg.output_dim
-        total_cells = layer_1_cells + layer_2_cells
-        num_tiles = (total_cells + xbar_cells - 1) // xbar_cells
-        utilization = total_cells / (num_tiles * xbar_cells)
-
+        bundle = default_asic_bundle(
+            input_dim=cfg.input_dim,
+            hidden_dim=cfg.hidden_dim,
+            output_dim=cfg.output_dim,
+            crossbar_rows=cfg.crossbar_rows,
+            crossbar_cols=cfg.crossbar_cols,
+        )
+        xbar = bundle["crossbar"]
         return {
             "crossbar_rows": cfg.crossbar_rows,
             "crossbar_cols": cfg.crossbar_cols,
             "weight_levels": cfg.weight_levels,
             "num_steps": cfg.num_steps,
-            "layer1_cells": layer_1_cells,
-            "layer2_cells": layer_2_cells,
-            "total_cells": total_cells,
-            "tile_count": num_tiles,
-            "tile_utilization": utilization,
+            "layer1_cells": xbar["layer1_cells"],
+            "layer2_cells": xbar["layer2_cells"],
+            "total_cells": xbar["total_cells"],
+            "tile_count": xbar["tile_count_total"],
+            "tile_utilization": xbar["tile_utilization_total"],
         }

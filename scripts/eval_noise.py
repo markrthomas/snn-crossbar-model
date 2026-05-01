@@ -29,7 +29,7 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from src.crossbar_snn import CrossbarConfig, CrossbarSNN, quantize_ste
+from src.crossbar_snn import BYPASS_QUANTIZATION, CrossbarConfig, CrossbarSNN, quantize_ste
 from src.train_utils import evaluate
 
 
@@ -77,9 +77,10 @@ def noisy_weights(
     model.fc1.weight.data = q_w1 + sigma * torch.randn_like(q_w1)
     model.fc2.weight.data = q_w2 + sigma * torch.randn_like(q_w2)
 
-    # Disable re-quantisation during forward (levels <= 1 is identity in _STEQuantize)
-    model.fc1.levels = 1
-    model.fc2.levels = 1
+    # Disable re-quantisation during forward so the noisy weights aren't snapped
+    # back to the grid on every call (see BYPASS_QUANTIZATION in crossbar_snn.py).
+    model.fc1.levels = BYPASS_QUANTIZATION
+    model.fc2.levels = BYPASS_QUANTIZATION
     try:
         yield
     finally:
