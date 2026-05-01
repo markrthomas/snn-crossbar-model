@@ -1,6 +1,6 @@
 PYTHON ?= python3
 
-.PHONY: install train eval ref-compare rtl-check test sweep noise docs clean
+.PHONY: install train eval ref-compare rtl-check test sweep noise visualize docs clean
 
 install:
 	$(PYTHON) -m pip install -r requirements.txt
@@ -51,6 +51,21 @@ noise:
 	  --weight-levels $(NOISE_LEVELS) \
 	  --num-steps $(NOISE_STEPS) \
 	  --out artifacts/noise_results.json
+
+# Visualisation: generate PNG plots from training artifacts.
+#   make visualize                                  # default paths, headless
+#   make visualize VIZ_HIDDEN=128 VIZ_LEVELS=32     # match a specific checkpoint
+#   make visualize VIZ_ARGS="--show"                # open interactive windows
+VIZ_HIDDEN ?= 256
+VIZ_LEVELS ?= 32
+VIZ_STEPS  ?= 25
+VIZ_ARGS   ?=
+visualize:
+	$(PYTHON) scripts/visualize.py \
+	  --hidden-dim $(VIZ_HIDDEN) \
+	  --weight-levels $(VIZ_LEVELS) \
+	  --num-steps $(VIZ_STEPS) \
+	  $(VIZ_ARGS)
 
 docs:
 	@echo "Documentation available at doc/design_spec.md"

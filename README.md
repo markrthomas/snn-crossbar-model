@@ -143,6 +143,31 @@ python train.py --noise-sigma 0.05 --weight-levels 16
 
 ---
 
+## Visualisation
+
+```bash
+make visualize                        # headless, default paths → artifacts/plots/
+make visualize VIZ_HIDDEN=128         # match a checkpoint trained with hidden_dim=128
+python scripts/visualize.py --show    # open interactive windows (requires a display)
+```
+
+Generates PNG plots in `artifacts/plots/`:
+
+| File | Contents | Requires |
+|------|----------|---------|
+| `training.png` | Loss and accuracy curves per epoch | `artifacts/history.json` |
+| `weights.png` | Raw vs quantised weight histograms for fc1 / fc2 | checkpoint |
+| `tiles.png` | Crossbar tile fill-fraction grid for fc1 / fc2 | config only |
+| `noise.png` | Accuracy ± std vs noise σ (absolute and in LSB units) | `artifacts/noise_results.json` |
+| `sweep.png` | Accuracy heatmap (weight_levels × num_steps) + top-config bar chart | `artifacts/sweep/sweep_results.json` |
+| `sweep_curves.png` | Per-config test accuracy vs epoch | sweep results with epoch logs |
+
+The tile layout is always generated from the config alone — no training run needed.
+The checkpoint `hidden_dim` is auto-detected, so `--hidden-dim` only affects the tile
+layout and is not required to match the checkpoint.
+
+---
+
 ## Four-way fixed-point cross-check
 
 Verifies that the Python, C++, SystemC, and Verilog RTL implementations produce
